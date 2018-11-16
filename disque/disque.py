@@ -24,20 +24,36 @@ import time
 from lib import db
 from lib import threaded
 
-__doc__ = "persistent queueing"
+__doc__ = "persisent queueing"
 
-class DiskQueue:
+class Disque:
     """
     a disk-based FIFO structure intended to alleviate memory-hungry queuing
     
     essentially, this is a linked list of chunked data stored within
     a database
 
-    this maintains queue order by NOT
+    the queue operates within a directory-based database,
+    and maintains persistence and synchronization
+    via 3 files used in tandem with flock calls
+
+    each chunk is stored as an array of values,
+    and terminated with the name of the next expected chunk;
+    these are stored in the CSV format
+
+    the dequeue operation skips any leading NUL bytes,
+    then overwrites the dequeued CSV row with the NUL byte,
+    in order to maintain persistence
     """
     ###########################################synchonization
     ##########################################error handling
-    NEXT_PATH = "next path"
+
+    class Dialect(csv.excel):
+        quoting = csv.QUOTE_ALL
+    
+    GET_LOCK = "get lock"
+    NEXT = "next"
+    PUT_LOCK = "put lock"
     
     def __init__(self, directory = os.getcwd(), hash = "sha256",
             n_per_chunk = 512):
@@ -45,10 +61,11 @@ class DiskQueue:
         self._get_fp = None
         self._get_fp_reader = None
         self._get_fp_size = 0
+        self._get_lock = thread.allocate_lock()
         self._next_path = None
 
-        if DiskQueue.NEXT_PATH in self._db:
-            self.next_path = self._db[DiskQueue.NEXT_PATH]
+        if Disque.NEXT in self._db:
+            self.next_path = self._db[Disque.NEXT]
         self._put_fp = None
         self._put_nlines = 0
 
@@ -68,17 +85,17 @@ class DiskQueue:
         
         if not isinstance(self._get_fp, file):
             if self._next_path == None:
-                if not DiskQueue.NEXT_PATH in self._db:
+                if not Disque.NEXT in self._db:
                     raise ValueError("empty")
-                self._next_path = self._db[DiskQueue.NEXT_PATH]
+                self._next_path = self._db[Disque.NEXT]
             self._get_fp = open(self._next_path)
             self._get_fp.seek(0, os.SEEK_END)
             self._get_fp_size = self._get_fp.tell()
             self._get_fp.seek(0, os.SEEK_SET)
-            self._get_fp_reader = reader.
+            self._get_fp_reader = csv.reader(self_get_fp, Disque.Dialect)
 
         try:
-            value = csv.reader(
+            value = self._get_fp_reader
         ###############read next line
         ###############check for EOF
 
