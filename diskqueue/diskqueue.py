@@ -14,93 +14,73 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import csv
-import json
+import hashlib
 import os
 import Queue
 import sys
-import threading
+import thread
 import time
 
-sys.path.append(os.path.realpath(__file__))
+from lib import db
+from lib import threaded
 
-import withfile
-
-__doc__ = "large-scale, disk-based queues"
+__doc__ = "persistent queueing"
 
 class DiskQueue:
     """
-    a parallel-safe, on-disk queue (formatted as a chunked linked list)
+    a disk-based FIFO structure intended to alleviate memory-hungry queuing
+    
+    essentially, this is a linked list of chunked data stored within
+    a database
 
-    general structure is as follows:
-        nodes form the linked list, but are stored separately from data chunks
-        the head node is stored at "directory/head"
-        in the absence of a head node, the queue is perceived to be empty
-
-        writing occurs directly into the tail node
-
-        reading is chunked (ie. 1 chunk is loaded every 1-max_chunk_size calls)
+    this maintains queue order by NOT
     """
+    ###########################################synchonization
+    ##########################################error handling
+    NEXT_PATH = "next path"
+    
+    def __init__(self, directory = os.getcwd(), hash = "sha256",
+            n_per_chunk = 512):
+        self._db = db.DB(directory, hash)
+        self._get_fp = None
+        self._get_fp_reader = None
+        self._get_fp_size = 0
+        self._next_path = None
 
-    def __init__(self, directory = os.getcwd(), max_chunk_size = 512):
-        self.directory = os.path.realpath(directory)
-        self.head_path = os.path.join(self.directory, "head")
-        assert isinstance(max_chunk_size, int) and max_chunk_size > 0, \
-            "max_chunk_size must be an integer > 0"
-        self.max_chunk_size = max_chunk_size
-        self._output_chunk = Queue.Queue()
-
-    def empty(self):
-        return self._chunk.empty() and self.head == None
+        if DiskQueue.NEXT_PATH in self._db:
+            self.next_path = self._db[DiskQueue.NEXT_PATH]
+        self._put_fp = None
+        self._put_nlines = 0
 
     def __enter__(self):
-        pass
+        self._db.__enter__()
+        return self
 
     def __exit__(self, *exception):
-        pass
-
-    def get(self):
-        pass
-
-    def __len__(self):
-        """calculate the queue size (O(N chunks))"""
-        pass
-
-    def put(self, value):
-        pass
-
-class DiskQueueNodeIO:
-    """an on-disk linked list queue node"""
-
-    def __init__(self, fp, data = None, next = None):
-        self.data = data
-        assert isinstance(fp, file) and not fp.closed, \
-            "fp must be an open file"
-        self._fp = fp
-        self.next = next
-
-    def read(self):
-        """read the node from the file into the current instance"""
-        mapping = json.load(self._fp)
-        self.data = mapping["data"]
-        self.next = mapping["next"]
-
-    def write(self):
-        """write the node instance into the file"""
-        json.dump(self._fp, {"data": self.data, "node": self.node})
-
-class DiskQueueChunkIO:
-    """a chunk of queue data stored as a CSV list"""
+        for fp in (self._get_fp, self._put_fp):
+            if isinstance(fp, file) and not fp.closed:
+                fp.close()
+        self._db.__exit__(*exception)
     
-    def __init__(self, fp):
-        assert isinstance(fp, file) and not fp.closed, \
-            "fp must be an open file"
-        self._fp = fp
+    def get(self):
+        """get the next available value"""
+        self.__enter__()
+        
+        if not isinstance(self._get_fp, file):
+            if self._next_path == None:
+                if not DiskQueue.NEXT_PATH in self._db:
+                    raise ValueError("empty")
+                self._next_path = self._db[DiskQueue.NEXT_PATH]
+            self._get_fp = open(self._next_path)
+            self._get_fp.seek(0, os.SEEK_END)
+            self._get_fp_size = self._get_fp.tell()
+            self._get_fp.seek(0, os.SEEK_SET)
+            self._get_fp_reader = reader.
 
-    def read(self):
-        pass
+        try:
+            value = csv.reader(
+        ###############read next line
+        ###############check for EOF
 
-    def remove(self):
-        os.remove(self.path)
-
-    def write(self, data):
+    def put(self):
         pass
