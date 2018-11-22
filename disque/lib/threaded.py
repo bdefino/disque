@@ -188,9 +188,7 @@ class Slaving(Threaded):
         if self.nthreads <= 0:
             raise ValueError("nthreads correlates to the number of slaves:" \
                 " it must be positive")
-
-        for i in range(self.nthreads): # start the slaves
-            thread.start_new_thread(self._slave_loop, ())
+        self.start() # starts the slaves
 
     def kill_all(self):
         """attempt to gracefully kill the slaves"""
@@ -205,6 +203,15 @@ class Slaving(Threaded):
         while self.alive.get():
             taskinfo = self._input_queue.get()
             self._handle_task(taskinfo.task, *taskinfo.args, **taskinfo.kwargs)
+
+    def start(self):
+        """set alive to True and start the slaves"""
+        self.alive.set(True)
+        i = 0
+
+        while i < self.nthreads: # start the slaves
+            thread.start_new_thread(self._slave_loop, ())
+            i += 1
 
 class Pipelining(Slaving):
     """pipeline iterable tasks among the slaves"""
