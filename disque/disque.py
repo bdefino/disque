@@ -25,7 +25,7 @@ import time
 
 from lib import withfile
 
-__doc__ = "persisent queueing"
+__doc__ = "persistent queueing"
 
 class Disque:
     """
