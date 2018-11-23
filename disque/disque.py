@@ -76,6 +76,25 @@ class Disque:
             json.dump(self._index, self._index_fp)
             self._fsync(self._index_fp)
 
+    def empty(self):
+        """return whether the queue is empty"""
+        with self._get_lock:
+            with withfile.FileLock(self._index_fp):
+                if not self._index[Disque.HEAD]: # no head set, use tail
+                    self._index[Disque.HEAD] = self._index[Disque.TAIL]
+                path = os.path.join(self.directory, self._index[Disque.HEAD])
+                
+                if not os.path.exists(path):
+                    return True
+                
+                with open(path, "rb") as fp:
+                    fp_reader = csv.reader(fp)
+                    
+                    for i, row in enumerate(fp_reader):
+                        if i:
+                            return False
+        return True
+
     def _fsync(self, fp):
         """flush a file-like objects buffer, synching to disk if possible"""
         fp.flush()
