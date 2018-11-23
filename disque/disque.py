@@ -84,7 +84,7 @@ class Disque:
                     self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
                 path = os.path.join(self.directory, self._index[Disque.HEAD])
                 
-                if not os.path.exists(path):
+                if not os.path.isfile(path):
                     return True
                 
                 with open(path, "rb") as fp:
@@ -123,7 +123,7 @@ class Disque:
                     path = os.path.join(self.directory,
                         self._index[Disque.HEAD])
                     
-                    if not os.path.exists(path):
+                    if not os.path.isfile(path):
                         raise ValueError("empty")
                     
                     with open(path, "rb") as fp:
