@@ -43,11 +43,8 @@ class Disque:
     because this operates by buffering entries,
     not everything may be on disk at a time
     """
-
-    CHUNK_SIZE = "chunk size"
-    HEAD = "head"
-    INDEX = ".index"
-    NEXT_TAIL = "next tail"
+    #########################general issues with API and terminology
+    #######################consider minor protocol revision
     
     def __init__(self, directory = os.getcwd(), hash = "sha256",
             chunk_size = 512):
@@ -56,18 +53,54 @@ class Disque:
         self.directory = directory
         self._get_lock = threading.RLock()
         self.hash = hash
-        self._index = {Disque.CHUNK_SIZE: chunk_size, Disque.HEAD: "",
-            Disque.NEXT_TAIL: ""} # current index values
+        self._index = {"chunk-size": chunk_size, "head": "", "next-tail": ""}
         self._index_fp = self._persistent_open(os.path.join(self.directory,
-            Disque.INDEX))
+            ".index"))
         self._inbuf = collections.deque()
         self._outbuf = collections.deque()
         self._put_lock = threading.RLock()
 
         self._load_index()
 
-        if self._index[Disque.CHUNK_SIZE] <= 0:
+        if self._index["chunk-size"] <= 0:
             raise ValueError("chunk_size must be greater than 0")
+
+    def _append(self, flush = False):
+        """
+        append a buffered chunk if the size constraint is met
+        or flush is specified
+        """
+        if not len(self._inbuf) \
+                or (not len(self._inbuf) >= self._index["chunk-size"]
+                and not flush):
+            return
+        
+        with self._put_lock:
+            with withfile.FileLock(self._index_fp):
+                self._load_index()
+                tail = self._index["next-tail"]
+
+                if not tail:
+                    tail = self._generate_name()
+
+                if not self._index["head"]:
+                    self._index["head"] = tail
+                path = os.path.join(self.directory, tail)
+                self._index["next-tail"] = self._generate_name()
+                
+                with self._persistent_open(path) as fp:
+                    i = 0
+                    writer = csv.writer(fp)
+
+                    while i < self._index["chunk-size"] and len(self._inbuf):
+                        writer.writerow([self._inbuf.popleft()])
+                        i += 1
+                    writer.writerow([self._index["next-tail"]]) # link
+                    self._fsync(fp)
+                self._dump_index()
+
+                if flush and len(self._inbuf): # flush the remainder
+                    self._append(True)
 
     def _dump_index(self):
         """dump the index"""
@@ -79,26 +112,13 @@ class Disque:
     def empty(self):
         """return whether the disque is empty"""
         with self._get_lock:
-            if len(self._outbuf):
-                return False
-            
             with withfile.FileLock(self._index_fp):
-                if not self._index[Disque.HEAD]: # no head set, use tail
-                    self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
-                path = os.path.join(self.directory, self._index[Disque.HEAD])
-                
-                if not os.path.isfile(path):
-                    return True
-                
-                with open(path, "rb") as fp:
-                    fp_reader = csv.reader(fp)
-                    
-                    for i, row in enumerate(fp_reader):
-                        if i:
-                            return False
-
-            with self._put_lock:
-                return not len(self._inbuf)
+                while not len(self._outbuf):
+                    try:
+                        self._pop()
+                    except ValueError:
+                        return True
+                return False
 
     def _fsync(self, fp):
         """flush a file-like objects buffer, synching to disk if possible"""
@@ -116,38 +136,8 @@ class Disque:
     def get(self):
         """get octets from the disque"""
         with self._get_lock:
-            if not len(self._outbuf): # read the head chunk
-                with withfile.FileLock(self._index_fp):
-                    self._load_index()
-
-                    if not self._index[Disque.HEAD]: # no head set, use tail
-                        if not self._index[Disque.NEXT_TAIL]:
-                            self._write_outbuf(True) # flush to new tail
-                        self._index[Disque.HEAD] = \
-                            self._index[Disque.NEXT_TAIL]
-                    path = os.path.join(self.directory,
-                        self._index[Disque.HEAD])
-                    
-                    if not os.path.isfile(path):
-                        raise ValueError("empty")
-                    
-                    with open(path, "rb") as fp:
-                        fp_reader = csv.reader(fp)
-
-                        for row in fp_reader:
-                            self._outbuf.append(row[0])
-
-                        if len(self._outbuf): # read link
-                            self._index[Disque.HEAD] = self._outbuf.pop()
-                    os.remove(path)
-                    self._dump_index()
-
-                if not len(self._outbuf) and len(self._inbuf): # flush
-                    self._write_outbuf(True)
-                    return self.get() # recurse
-
-            if not len(self._outbuf):
-                raise ValueError("empty")
+            while not len(self._outbuf):
+                self._pop()
             return self._outbuf.popleft()
 
     def _load_index(self, re_sync = True):
@@ -164,8 +154,8 @@ class Disque:
             if isinstance(index, dict):
                 index = {str(k): v for k, v in index.iteritems()}
                 
-                for key, type in ((Disque.CHUNK_SIZE, int), (Disque.HEAD, str),
-                        (Disque.NEXT_TAIL, str)): # caste
+                for key, type in (("chunk-size", int), ("head", str),
+                        ("next-tail", str)): # caste
                     if key in index:
                         try:
                             self._index[key] = type(self._index[key])
@@ -179,6 +169,36 @@ class Disque:
         """open a path using a mode that'll preserve its contents"""
         return open(path, ('r' if os.path.exists(path) else 'w') + "+b")
 
+    def _pop(self):
+        """extract the head chunk into the buffer"""
+        with self._get_lock:
+            with withfile.FileLock(self._index_fp):
+                self._load_index()
+
+                if not self._index["head"]:
+                    self._append(True)
+                path = os.path.join(self.directory, self._index["head"])
+                
+                if not os.path.isfile(path): # check for buffered input
+                    self._append(True)
+                    path = os.path.join(self.directory, self._index["head"])
+
+                if not os.path.isfile(path):
+                    raise ValueError("empty")
+                
+                with open(path, "rb") as fp:
+                    fp_reader = csv.reader(fp)
+
+                    for row in fp_reader:
+                        self._outbuf.append(row[0])
+
+                    if len(self._outbuf): # read link
+                        self._index["head"] = self._outbuf.pop()
+                    else:
+                        self._index["head"] = ""
+                os.remove(path)
+                self._dump_index()
+
     def put(self, octets, flush = False):
         """put octets into the disque, optionally flushing the buffer"""
         if not isinstance(octets, bytearray) and not isinstance(octets, str) \
@@ -188,75 +208,41 @@ class Disque:
 
         with self._put_lock:
             self._inbuf.append(octets)
-
-            with withfile.FileLock(self._index_fp):
-                self._write_outbuf(flush)
+            self._append(flush)
     
     def sync(self):
         """
-        flush the buffers into the disque
+        flush the buffers into the disque in the following order:
+            output buffer + head + ...tail + input buffer
         
-        this may result in a single small chunk joining the head
-        and the existing output buffer
+        this will most likely result in the final chunk of the output buffer
+        being smaller than the specified chunk size
         """
         with withfile.FileLock(self._index_fp):
             current = self._generate_name()
             next = self._generate_name()
             
             while len(self._outbuf): # re-insert the buffered head(s)
-                with self._persistent_open(os.path.join(self.directory,
-                        current)) as fp:
+                path = os.path.join(self.directory, current)
+                
+                with self._persistent_open(path) as fp:
                     fp_writer = csv.writer(fp)
                     i = 0
 
-                    while i < self._index[Disque.CHUNK_SIZE] \
+                    while i < self._index["chunk-size"] \
                             and len(self._outbuf):
                         fp_writer.writerow([self._outbuf.popleft()])
                         i += 1
 
-                    if i == self._index[Disque.CHUNK_SIZE]:
+                    if i == self._index["chunk-size"]:
                         if not len(self._outbuf) \
-                                and self._index[Disque.HEAD]: # link to head
-                            next = self._index[Disque.HEAD]
+                                and self._index["head"]: # link to head
+                            next = self._index["head"]
                         else: # update the index
-                            self._index[Disque.NEXT_TAIL] = next
+                            self._index["next-tail"] = next
                     fp_writer.writerow([next]) # link
                     self._fsync(fp)
                 current = next
                 next = self._generate_name()
             self._dump_index()
-            self._write_outbuf(True) # flush the buffered tail(s)
-
-    def _write_outbuf(self, flush = False):
-        """write a chunk (or all chunks, if flush is specified) from _inbuf"""
-        if not len(self._inbuf) >= self._index[Disque.CHUNK_SIZE] \
-                and not flush:
-            return
-        
-        with self._put_lock:
-            with withfile.FileLock(self._index_fp):
-                self._load_index()
-
-                if not self._index[Disque.NEXT_TAIL]: # seed
-                    self._index[Disque.NEXT_TAIL] = self._generate_name()
-                
-                if not self._index[Disque.HEAD]: # redirect
-                    self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
-                tail = self._index.pop(Disque.NEXT_TAIL)
-                self._index[Disque.NEXT_TAIL] = self._generate_name()
-                
-                with self._persistent_open(os.path.join(self.directory,
-                        tail)) as fp:
-                    i = 0
-                    fp_writer = csv.writer(fp)
-
-                    while i < self._index[Disque.CHUNK_SIZE] \
-                            and len(self._inbuf):
-                        fp_writer.writerow([self._inbuf.popleft()])
-                        i += 1
-                    fp_writer.writerow([self._index[Disque.NEXT_TAIL]]) # link
-                    self._fsync(fp)
-                self._dump_index()
-
-                if flush and len(self._inbuf): # flush the remainder
-                    self._write_outbuf(True)
+            self._append(True) # flush the buffered tail(s)
