@@ -81,7 +81,7 @@ class Disque:
         with self._get_lock:
             with withfile.FileLock(self._index_fp):
                 if not self._index[Disque.HEAD]: # no head set, use tail
-                    self._index[Disque.HEAD] = self._index[Disque.TAIL]
+                    self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
                 path = os.path.join(self.directory, self._index[Disque.HEAD])
                 
                 if not os.path.exists(path):
@@ -116,9 +116,10 @@ class Disque:
                     self._load_index()
 
                     if not self._index[Disque.HEAD]: # no head set, use tail
-                        if not self._index[Disque.TAIL]:
+                        if not self._index[Disque.NEXT_TAIL]:
                             self._write_outbuf(True) # flush to new tail
-                        self._index[Disque.HEAD] = self._index[Disque.TAIL]
+                        self._index[Disque.HEAD] = \
+                            self._index[Disque.NEXT_TAIL]
                     path = os.path.join(self.directory,
                         self._index[Disque.HEAD])
                     
@@ -209,7 +210,7 @@ class Disque:
                                 and self._index[Disque.HEAD]: # link to head
                             next = self._index[Disque.HEAD]
                         else: # update the index
-                            self._index[Disque.TAIL] = next
+                            self._index[Disque.NEXT_TAIL] = next
                     fp_writer.writerow([next]) # link
                     self._fsync(fp)
                 current = next
