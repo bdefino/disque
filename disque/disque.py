@@ -20,7 +20,7 @@ import json
 import os
 import Queue
 import sys
-import thread
+import threading
 import time
 
 from lib import withfile
@@ -54,7 +54,7 @@ class Disque:
         if not os.path.exists(directory):
             os.makedirs(directory)
         self.directory = directory
-        self._get_lock = thread.allocate_lock()
+        self._get_lock = threading.RLock()
         self.hash = hash
         self._index = {Disque.CHUNK_SIZE: chunk_size, Disque.HEAD: "",
             Disque.NEXT_TAIL: ""} # current index values
@@ -62,7 +62,7 @@ class Disque:
             Disque.INDEX))
         self._inbuf = collections.deque()
         self._outbuf = collections.deque()
-        self._put_lock = thread.allocate_lock()
+        self._put_lock = threading.RLock()
 
         self._load_index()
 
@@ -77,8 +77,11 @@ class Disque:
             self._fsync(self._index_fp)
 
     def empty(self):
-        """return whether the queue is empty"""
+        """return whether the disque is empty"""
         with self._get_lock:
+            if len(self._outbuf):
+                return False
+            
             with withfile.FileLock(self._index_fp):
                 if not self._index[Disque.HEAD]: # no head set, use tail
                     self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
@@ -93,7 +96,9 @@ class Disque:
                     for i, row in enumerate(fp_reader):
                         if i:
                             return False
-        return True
+
+            with self._put_lock:
+                return not len(self._inbuf)
 
     def _fsync(self, fp):
         """flush a file-like objects buffer, synching to disk if possible"""
@@ -136,6 +141,10 @@ class Disque:
                             self._index[Disque.HEAD] = self._outbuf.pop()
                     os.remove(path)
                     self._dump_index()
+
+                if not len(self._outbuf) and len(self._inbuf): # flush
+                    self._write_outbuf(True)
+                    return self.get() # recurse
 
             if not len(self._outbuf):
                 raise ValueError("empty")
@@ -224,28 +233,30 @@ class Disque:
                 and not flush:
             return
         
-        with withfile.FileLock(self._index_fp):
-            self._load_index()
+        with self._put_lock:
+            with withfile.FileLock(self._index_fp):
+                self._load_index()
 
-            if not self._index[Disque.NEXT_TAIL]: # seed
+                if not self._index[Disque.NEXT_TAIL]: # seed
+                    self._index[Disque.NEXT_TAIL] = self._generate_name()
+                
+                if not self._index[Disque.HEAD]: # redirect
+                    self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
+                tail = self._index.pop(Disque.NEXT_TAIL)
                 self._index[Disque.NEXT_TAIL] = self._generate_name()
-            
-            if not self._index[Disque.HEAD]: # redirect
-                self._index[Disque.HEAD] = self._index[Disque.NEXT_TAIL]
-            tail = self._index.pop(Disque.NEXT_TAIL)
-            self._index[Disque.NEXT_TAIL] = self._generate_name() # next link
-            
-            with self._persistent_open(os.path.join(self.directory, tail)) \
-                    as fp:
-                i = 0
-                fp_writer = csv.writer(fp)
+                
+                with self._persistent_open(os.path.join(self.directory,
+                        tail)) as fp:
+                    i = 0
+                    fp_writer = csv.writer(fp)
 
-                while i < self._index[Disque.CHUNK_SIZE]  and len(self._inbuf):
-                    fp_writer.writerow([self._inbuf.popleft()])
-                    i += 1
-                fp_writer.writerow([self._index[Disque.NEXT_TAIL]]) # link
-                self._fsync(fp)
-            self._dump_index()
+                    while i < self._index[Disque.CHUNK_SIZE] \
+                            and len(self._inbuf):
+                        fp_writer.writerow([self._inbuf.popleft()])
+                        i += 1
+                    fp_writer.writerow([self._index[Disque.NEXT_TAIL]]) # link
+                    self._fsync(fp)
+                self._dump_index()
 
-            if flush and len(self._inbuf): # flush the remainder
-                self._write_outbuf(True)
+                if flush and len(self._inbuf): # flush the remainder
+                    self._write_outbuf(True)
