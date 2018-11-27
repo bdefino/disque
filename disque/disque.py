@@ -117,6 +117,9 @@ class Disque:
         self.__enter__()
         
         with self._get_lock:
+            if len(self._outbuf): # diminish flock calls
+                return False
+            
             with self._index_fp_lock:
                 while not len(self._outbuf):
                     try:
@@ -158,6 +161,9 @@ class Disque:
         self.__enter__()
         
         with self._get_lock:
+            if len(self._outbuf): # diminish flock calls
+                return self._outbute.popleft()
+            
             with self._index_fp_lock:
                 while not len(self._outbuf):
                     self._pop_chunk()
