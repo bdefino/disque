@@ -162,7 +162,7 @@ class Disque:
         
         with self._get_lock:
             if len(self._outbuf): # diminish flock calls
-                return self._outbute.popleft()
+                return self._outbuf.popleft()
             
             with self._index_fp_lock:
                 while not len(self._outbuf):
