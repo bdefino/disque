@@ -15,7 +15,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 __package__ = __name__
 
-import disque
 from disque import Disque
 
 __doc__ = "persistent, large-scale queueing"
